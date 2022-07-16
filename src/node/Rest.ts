@@ -1,6 +1,5 @@
 import { Node } from './Node';
 import { NodeOption } from '../Shoukaku';
-import Petitio, { HTTPMethod } from 'petitio';
 
 export type LoadType = 'TRACK_LOADED' | 'PLAYLIST_LOADED' | 'SEARCH_RESULT' | 'NO_MATCHES' | 'LOAD_FAILED';
 
@@ -9,7 +8,7 @@ interface FetchOptions {
     options: {
         headers?: Record<string, string>;
         params?: Record<string, string>;
-        method?: HTTPMethod;
+        method?: string;
         body?: Record<string, unknown>;
         [key: string]: unknown;
     };
@@ -142,7 +141,7 @@ export class Rest {
         const options = {
             endpoint: '/routeplanner/free/address',
             options: {
-                method: 'POST' as HTTPMethod,
+                method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: { address }
             }
@@ -154,14 +153,15 @@ export class Rest {
     /**
      * Make a request to Lavalink
      * @param fetchOptions.endpoint Lavalink endpoint
-     * @param fetchOptions.options Options passed to petitio
+     * @param fetchOptions.options Options passed to fetch
      * @internal
      */
     private async fetch<T = unknown>(fetchOptions: FetchOptions) {
         const { endpoint, options } = fetchOptions;
         let headers = {
             'Authorization': this.auth,
-            'User-Agent': this.node.manager.options.userAgent
+            'User-Agent': this.node.manager.options.userAgent,
+            'Content-Type': 'application/json'
         };
 
         if (options.headers) headers = { ...headers, ...options.headers };
@@ -169,19 +169,28 @@ export class Rest {
         const url = new URL(`${this.url}${endpoint}`);
         if (options.params) url.search = new URLSearchParams(options.params).toString();
 
-        const request = await Petitio(url.toString())
-            .method(options.method?.toUpperCase() as HTTPMethod || 'GET')
-            .header(headers)
-            .body(options.body ?? {})
-            .timeout(this.node.manager.options.restTimeout || 15000)
-            .send();
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), this.node.manager.options.restTimeout || 15000);
 
-        if (request.statusCode && (request.statusCode >= 400))
-            throw new Error(`Rest request failed with response code: ${request.statusCode}`);
+        const request = await fetch(url.toString(), {
+            method: options.method?.toUpperCase() || 'GET',
+            headers,
+            body: JSON.stringify(options.body ?? {}),
+            signal: controller.signal
+        });
 
-        const body = request.body.toString('utf8');
-        if (!body?.length) return null;
+        clearTimeout(timeout);
 
-        return JSON.parse(body) as T;
+        if (request.status && (request.status >= 400))
+            throw new Error(`Rest request failed with response code: ${request.status}`);
+
+        let body;
+        try {
+            body = await request.json();
+        } catch {
+            return null;
+        }
+
+        return body as T;
     }
 }
